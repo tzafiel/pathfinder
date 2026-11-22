@@ -4404,5 +4404,180 @@ const PF = (function () {
   return api;
 })();
 </script>
+  <!-- Pathfinder Local-First Sync & Live FRED Rates Module -->
+<script>
+(() => {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+    });
+  }
+
+  const STORAGE_KEY = 'pathfinder_live_rates_v1';
+  const FALLBACK = {
+    updated_utc: '2026-11-22T00:00:00Z',
+    source: 'FRED',
+    rates: {
+      mortgage_30y: { value: 7.28, date: '2026-11-19', label: '30-Yr Fixed' },
+      mortgage_15y: { value: 6.66, date: '2026-11-19', label: '15-Yr Fixed' },
+      fha_30y:      { value: 7.02, date: '2026-11-19', label: '30-Yr FHA' },
+      treasury_10y: { value: 5.04, date: '2026-11-19', label: '10-Yr Treasury' }
+    }
+  };
+
+  let state = FALLBACK;
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) state = JSON.parse(saved);
+  } catch (_) {}
+  window.PATHFINDER_LIVE_RATES = state;
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #pf-rate-wrap {
+      position: fixed;
+      right: 12px;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 78px);
+      z-index: 9998;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #pf-rate-pill {
+      display: flex; align-items: center; gap: 7px;
+      padding: 7px 12px; border-radius: 999px;
+      background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      color: #e2e8f0; font-size: 12px; font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      cursor: pointer; user-select: none;
+    }
+    #pf-rate-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #10b981; box-shadow: 0 0 8px #10b981;
+      flex-shrink: 0;
+    }
+    #pf-rate-dot.offline { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+    #pf-rate-card {
+      display: none; position: absolute; right: 0; bottom: 44px; width: 252px;
+      padding: 14px; border-radius: 18px;
+      background: rgba(10, 15, 30, 0.94);
+      backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      color: #f1f5f9; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    }
+    #pf-rate-card.open { display: block; }
+    .pf-rc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .pf-rc-title { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #38bdf8; }
+    .pf-rc-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 7px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      font-size: 13px;
+    }
+    .pf-rc-row:last-of-type { border-bottom: none; }
+    .pf-rc-val { font-weight: 700; color: #fff; cursor: pointer; padding: 2px 7px; border-radius: 8px; background: rgba(56, 189, 248, 0.14); }
+    .pf-rc-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; font-size: 11px; color: #94a3b8; }
+    .pf-rc-btn {
+      background: rgba(56, 189, 248, 0.18); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    @media print { #pf-rate-wrap { display: none !important; } }
+  `;
+  document.head.appendChild(style);
+
+  const wrap = document.createElement('div');
+  wrap.id = 'pf-rate-wrap';
+  wrap.innerHTML = `
+    <div id="pf-rate-card" role="dialog" aria-label="Live FRED Mortgage Rates">
+      <div class="pf-rc-head">
+        <span class="pf-rc-title">Live FRED Benchmarks</span>
+        <button class="pf-rc-btn" id="pf-sync-btn" type="button">Sync</button>
+      </div>
+      <div id="pf-rate-rows"></div>
+      <div class="pf-rc-foot">
+        <span id="pf-rate-meta">Cached locally</span>
+        <span>Tap rate to copy</span>
+      </div>
+    </div>
+    <button id="pf-rate-pill" type="button" aria-expanded="false">
+      <span id="pf-rate-dot"></span>
+      <span id="pf-rate-label">30Y --%</span>
+    </button>
+  `;
+  document.body.appendChild(wrap);
+
+  const card = document.getElementById('pf-rate-card');
+  const pill = document.getElementById('pf-rate-pill');
+  const dot = document.getElementById('pf-rate-dot');
+  const label = document.getElementById('pf-rate-label');
+  const rowsEl = document.getElementById('pf-rate-rows');
+  const metaEl = document.getElementById('pf-rate-meta');
+  const syncBtn = document.getElementById('pf-sync-btn');
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-').map(Number);
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${months[(m || 1) - 1]} ${d}`;
+  }
+
+  function render() {
+    const r = state.rates || FALLBACK.rates;
+    const online = navigator.onLine;
+    dot.classList.toggle('offline', !online);
+    const m30 = r.mortgage_30y ? r.mortgage_30y.value.toFixed(2) : '--';
+    const d30 = r.mortgage_30y ? fmtDate(r.mortgage_30y.date) : '';
+    label.textContent = `${online ? '30Y' : 'Offline · 30Y'} ${m30}%${d30 ? ' · ' + d30 : ''}`;
+
+    rowsEl.innerHTML = Object.values(r).map((item) => `
+      <div class="pf-rc-row">
+        <span>${item.label} <small style="color:#64748b">(${fmtDate(item.date)})</small></span>
+        <span class="pf-rc-val" data-copy="${item.value.toFixed(2)}">${item.value.toFixed(2)}%</span>
+      </div>
+    `).join('');
+
+    metaEl.textContent = online ? 'FRED static snapshot' : 'Offline cache active';
+  }
+
+  async function syncRates() {
+    if (!navigator.onLine) { render(); return; }
+    syncBtn.textContent = '...';
+    try {
+      const res = await fetch('./rates.json', { cache: 'no-store' });
+      if (res.ok) {
+        const fresh = await res.json();
+        if (fresh && fresh.rates) {
+          state = fresh;
+          window.PATHFINDER_LIVE_RATES = state;
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    syncBtn.textContent = 'Sync';
+    render();
+  }
+
+  pill.addEventListener('click', () => {
+    const open = card.classList.toggle('open');
+    pill.setAttribute('aria-expanded', String(open));
+  });
+
+  rowsEl.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-copy]');
+    if (!target) return;
+    const val = target.getAttribute('data-copy');
+    if (navigator.clipboard) navigator.clipboard.writeText(val).catch(() => {});
+    const prev = target.textContent;
+    target.textContent = 'Copied!';
+    setTimeout(() => { target.textContent = prev; }, 900);
+  });
+
+  syncBtn.addEventListener('click', syncRates);
+  window.addEventListener('online', syncRates);
+  window.addEventListener('offline', render);
+
+  render();
+  syncRates();
+})();
+</script>
 </body>
 </html>
