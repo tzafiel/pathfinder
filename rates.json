@@ -1,0 +1,10 @@
+{
+  "updated_utc": "2026-11-22T00:00:00Z",
+  "source": "FRED (Federal Reserve Bank of St. Louis)",
+  "rates": {
+    "mortgage_30y": { "value": 7.28, "date": "2026-11-19", "label": "30-Yr Fixed" },
+    "mortgage_15y": { "value": 6.66, "date": "2026-11-19", "label": "15-Yr Fixed" },
+    "fha_30y": { "value": 7.02, "date": "2026-11-19", "label": "30-Yr FHA" },
+    "treasury_10y": { "value": 5.04, "date": "2026-11-19", "label": "10-Yr Treasury" }
+  }
+}
